@@ -6,4 +6,5 @@ bower_components
 rel
 tmp
 .idea
+.grunt
 /.vs

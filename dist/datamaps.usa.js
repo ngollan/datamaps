@@ -2,7 +2,8 @@
   var svg;
 
   // Save off default references
-  var d3 = window.d3, topojson = window.topojson;
+  var d3 = window.d3,
+      topojson = window.topojson;
 
   var defaultOptions = {
     scope: 'world',
@@ -124,6 +125,21 @@
     return this.svg;
   }
 
+  // Work around D3 being stupid and breaking metaprogramming by polluting
+  // namespaces.
+  //
+  // `d3.geo.mercator` → `d3.geoMercator`
+  function getD3GeoProjection(name) {
+    var real_name = name.replace(/^([a-z])/, function(_, char) {
+      return char.toUpperCase();
+    });
+
+    var attr_name = 'geo' + real_name,
+        projection = d3['geo' + real_name];
+
+    return projection;
+  }
+
   // setProjection takes the svg element and options
   function setProjection( element, options ) {
     var width = options.width || element.offsetWidth;
@@ -136,12 +152,12 @@
     }
 
     if ( options.scope === 'usa' ) {
-      projection = d3.geo.albersUsa()
+      projection = d3.geoAlbersUsa()
         .scale(width)
         .translate([width / 2, height / 2]);
     }
     else if ( options.scope === 'world' ) {
-      projection = d3.geo[options.projection]()
+      projection = getD3GeoProjection(options.projection)()
         .scale((width + 1) / 2 / Math.PI)
         .translate([width / 2, height / (options.projection === "mercator" ? 1.45 : 1.8)]);
     }
@@ -163,7 +179,7 @@
       projection.scale(250).clipAngle(90).rotate(options.projectionConfig.rotation)
     }
 
-    path = d3.geo.path()
+    path = d3.geoPath()
       .projection( projection );
 
     return {path: path, projection: projection};
@@ -233,59 +249,71 @@
   }
 
   function handleGeographyConfig () {
-    var hoverover;
     var svg = this.svg;
     var self = this;
     var options = this.options.geographyConfig;
 
-    if ( options.highlightOnHover || options.popupOnHover ) {
-      svg.selectAll('.datamaps-subunit')
-        .on('mouseover', function(d) {
-          var $this = d3.select(this);
-          var datum = self.options.data[d.id] || {};
-          if ( options.highlightOnHover ) {
-            var previousAttributes = {
-              'fill':  $this.style('fill'),
-              'stroke': $this.style('stroke'),
-              'stroke-width': $this.style('stroke-width'),
-              'fill-opacity': $this.style('fill-opacity')
-            };
+    function highlightUnit(d) {
+      function moveToFront() {
+        this.parentNode.appendChild(this);
+      }
 
-            $this
-              .style('fill', val(datum.highlightFillColor, options.highlightFillColor, datum))
-              .style('stroke', val(datum.highlightBorderColor, options.highlightBorderColor, datum))
-              .style('stroke-width', val(datum.highlightBorderWidth, options.highlightBorderWidth, datum))
-              .style('stroke-opacity', val(datum.highlightBorderOpacity, options.highlightBorderOpacity, datum))
-              .style('fill-opacity', val(datum.highlightFillOpacity, options.highlightFillOpacity, datum))
-              .attr('data-previousAttributes', JSON.stringify(previousAttributes));
+      d3.event.stopPropagation();
 
-            // As per discussion on https://github.com/markmarkoh/datamaps/issues/19
-            if ( ! /((MSIE)|(Trident))/.test(navigator.userAgent) ) {
-             moveToFront.call(this);
-            }
-          }
+      var $this = d3.select(this);
+      var datum = self.options.data[d.id] || {};
 
-          if ( options.popupOnHover ) {
-            self.updatePopup($this, d, options, svg);
-          }
-        })
-        .on('mouseout', function() {
-          var $this = d3.select(this);
+      if ( options.highlightOnHover ) {
+        var previousAttributes = {
+          'fill':  $this.style('fill'),
+          'stroke': $this.style('stroke'),
+          'stroke-width': $this.style('stroke-width'),
+          'fill-opacity': $this.style('fill-opacity')
+        };
 
-          if (options.highlightOnHover) {
-            // Reapply previous attributes
-            var previousAttributes = JSON.parse( $this.attr('data-previousAttributes') );
-            for ( var attr in previousAttributes ) {
-              $this.style(attr, previousAttributes[attr]);
-            }
-          }
-          $this.on('mousemove', null);
-          d3.selectAll('.datamaps-hoverover').style('display', 'none');
-        });
+        $this
+          .style('fill', val(datum.highlightFillColor, options.highlightFillColor, datum))
+          .style('stroke', val(datum.highlightBorderColor, options.highlightBorderColor, datum))
+          .style('stroke-width', val(datum.highlightBorderWidth, options.highlightBorderWidth, datum))
+          .style('stroke-opacity', val(datum.highlightBorderOpacity, options.highlightBorderOpacity, datum))
+          .style('fill-opacity', val(datum.highlightFillOpacity, options.highlightFillOpacity, datum))
+          .attr('data-previousAttributes', JSON.stringify(previousAttributes));
+
+        // As per discussion on https://github.com/markmarkoh/datamaps/issues/19
+        if ( ! /((MSIE)|(Trident))/.test(navigator.userAgent) ) {
+          moveToFront.call(this);
+        }
+      }
+
+      if ( options.popupOnHover ) {
+        //TODO: this motherfucker breaks all highlighting by immediately
+        // triggering mouseout/-leave.
+        self.updatePopup($this, d, options, svg);
+      }
     }
 
-    function moveToFront() {
-      this.parentNode.appendChild(this);
+    function revertHighlight() {
+      d3.event.stopPropagation();
+
+      var $this = d3.select(this);
+
+      if (options.highlightOnHover) {
+        // Reapply previous attributes
+        var previousAttributes = JSON.parse( $this.attr('data-previousAttributes') );
+        for ( var attr in previousAttributes ) {
+          $this.style(attr, previousAttributes[attr]);
+        }
+      }
+
+      if (options.popupOnHover) {
+        self.hidePopup();
+      }
+    }
+
+    if ( options.highlightOnHover || options.popupOnHover ) {
+      svg.selectAll('.datamaps-subunit')
+        .on('mouseover', highlightUnit)
+        .on('mouseout', revertHighlight);
     }
   }
 
@@ -326,7 +354,7 @@
   }
 
     function addGraticule ( layer, options ) {
-      var graticule = d3.geo.graticule();
+      var graticule = d3.geoGraticule();
       this.svg.insert("path", '.datamaps-subunits')
         .datum(graticule)
         .attr("class", "datamaps-graticule")
@@ -355,7 +383,7 @@
 
     var arcs = layer.selectAll('path.datamaps-arc').data( data, JSON.stringify );
 
-    var path = d3.geo.path()
+    var path = d3.geoPath()
         .projection(self.projection);
 
     arcs
@@ -381,6 +409,9 @@
                        break;
                    case "CHL":
                        originXY = self.latLngToXY(-33.448890, -70.669265);
+                       break;
+                   case "HRV":
+                       originXY = self.latLngToXY(45.815011, 15.981919);
                        break;
                    case "IDN":
                        originXY = self.latLngToXY(-6.208763, 106.845599);
@@ -409,11 +440,14 @@
 
             if (typeof datum.destination === 'string') {
               switch (datum.destination) {
-                     case "CAN":
+                    case "CAN":
                         destXY = self.latLngToXY(56.624472, -114.665293);
                         break;
                     case "CHL":
                         destXY = self.latLngToXY(-33.448890, -70.669265);
+                        break;
+                    case "HRV":
+                        destXY = self.latLngToXY(45.815011, 15.981919);
                         break;
                     case "IDN":
                         destXY = self.latLngToXY(-6.208763, 106.845599);
@@ -442,7 +476,7 @@
             var midXY = [ (originXY[0] + destXY[0]) / 2, (originXY[1] + destXY[1]) / 2];
             if (options.greatArc) {
                   // TODO: Move this to inside `if` clause when setting attr `d`
-              var greatArc = d3.geo.greatArc()
+              var greatArc = d3.geoGreatArc()
                   .source(function(d) { return [val(d.origin.longitude, d), val(d.origin.latitude, d)]; })
                   .target(function(d) { return [val(d.destination.longitude, d), val(d.destination.latitude, d)]; });
 
@@ -496,6 +530,9 @@
     this.svg.selectAll(".datamaps-subunit")
       .attr("data-foo", function(d) {
         var center = self.path.centroid(d);
+        if ( d.properties.iso === 'USA' ) {
+            center = self.projection([-98.58333, 39.83333])
+        }
         var xOffset = 7.5, yOffset = 5;
 
         if ( ["FL", "KY", "MI"].indexOf(d.id) > -1 ) xOffset = -2.5;
@@ -711,7 +748,7 @@
     this.options.arcConfig = defaults(options.arcConfig, defaultOptions.arcConfig);
 
     // Add the SVG container
-    if ( d3.select( this.options.element ).select('svg').length > 0 ) {
+    if ( d3.select( this.options.element ).select('svg').empty() ) {
       addContainer.call(this, this.options.element, this.options.height, this.options.width );
     }
 
@@ -770,35 +807,39 @@
 
     return this;
 
-      function draw (data) {
-        // If fetching remote data, draw the map first then call `updateChoropleth`
-        if ( self.options.dataUrl ) {
-          // Allow for csv or json data types
-          d3[self.options.dataType](self.options.dataUrl, function(data) {
-            // In the case of csv, transform data to object
-            if ( self.options.dataType === 'csv' && (data && data.slice) ) {
-              var tmpData = {};
-              for(var i = 0; i < data.length; i++) {
-                tmpData[data[i].id] = data[i];
-              }
-              data = tmpData;
-            }
-            Datamaps.prototype.updateChoropleth.call(self, data);
-          });
+    function updateAfterD3Data(data) {
+      // In the case of csv, transform data to object
+      if ( self.options.dataType === 'csv' && (data && data.slice) ) {
+        var tmpData = {};
+        for(var i = 0; i < data.length; i++) {
+          tmpData[data[i].id] = data[i];
         }
-        drawSubunits.call(self, data);
-        handleGeographyConfig.call(self);
-
-        if ( self.options.geographyConfig.popupOnHover || self.options.bubblesConfig.popupOnHover) {
-          hoverover = d3.select( self.options.element ).append('div')
-            .attr('class', 'datamaps-hoverover')
-            .style('z-index', 10001)
-            .style('position', 'absolute');
-        }
-
-        // Fire off finished callback
-        self.options.done(self);
+        data = tmpData;
       }
+
+      Datamaps.prototype.updateChoropleth.call(self, data);
+    }
+
+    function draw (data) {
+      // If fetching remote data, draw the map first then call `updateChoropleth`
+      if ( self.options.dataUrl ) {
+        // Allow for csv or json data types
+        d3[self.options.dataType](self.options.dataUrl)
+        .then(updateAfterD3Data);
+      }
+      drawSubunits.call(self, data);
+      handleGeographyConfig.call(self);
+
+      if ( self.options.geographyConfig.popupOnHover || self.options.bubblesConfig.popupOnHover) {
+        d3.select( self.options.element ).append('div')
+          .attr('class', 'datamaps-hoverover')
+          .style('z-index', 10001)
+          .style('position', 'absolute');
+      }
+
+      // Fire off finished callback
+      self.options.done(self);
+    }
   };
   /**************************************
                 TopoJSON
@@ -1084,7 +1125,6 @@
 
   Datamap.prototype.updateChoropleth = function(data, options) {
     var svg = this.svg;
-    var that = this;
 
     // When options.reset = true, reset all the fill colors to the defaultFill and kill all data-info
     if ( options && options.reset === true ) {
@@ -1114,27 +1154,45 @@
         else {
           color = this.options.fills[ subunitData.fillKey ];
         }
+
         // If it's an object, overriding the previous data
         if ( subunitData === Object(subunitData) ) {
           this.options.data[subunit] = defaults(subunitData, this.options.data[subunit] || {});
           var geo = this.svg.select('.' + subunit).attr('data-info', JSON.stringify(this.options.data[subunit]));
         }
+
         svg
-          .selectAll('.' + subunit)
-          .transition()
-            .style('fill', color);
+        .selectAll('.' + subunit)
+        .transition()
+        .style('fill', color);
       }
     }
   };
 
+  Datamap.prototype.hidePopup = function() {
+    d3
+    .select(this.svg.node().parentNode)
+    .selectAll('.datamaps-hoverover')
+    .style('display', 'none');
+  };
+
   Datamap.prototype.updatePopup = function (element, d, options) {
-    var self = this;
-    element.on('mousemove', null);
-    element.on('mousemove', function() {
-      var position = d3.mouse(self.options.element);
-      d3.select(self.svg[0][0].parentNode).select('.datamaps-hoverover')
-        .style('top', ( (position[1] + 30)) + "px")
-        .html(function() {
+    var self = this,
+        node = self.svg.node();
+
+    element
+    .on('mousemove', null)
+    .on('mousemove', function() {
+      d3.event.stopPropagation();
+
+      var position = d3.mouse(self.options.element),
+          svg_height = node.parentNode.clientHeight, // SVG has no clientHeight!
+          x_pos = (position[0] + 2) + 'px',
+          y_pos = (svg_height - position[1] + 2) + 'px';
+
+      d3.select(node.parentNode)
+      .select('.datamaps-hoverover')
+      .html(function() {
           var data = JSON.parse(element.attr('data-info'));
           try {
             return options.popupTemplate(d, data);
@@ -1142,10 +1200,13 @@
             return "";
           }
         })
-        .style('left', ( position[0]) + "px");
+        .style('left', x_pos)
+        .style('bottom', y_pos);
     });
 
-    d3.select(self.svg[0][0].parentNode).select('.datamaps-hoverover').style('display', 'block');
+    d3.select(node.parentNode)
+    .select('.datamaps-hoverover')
+    .style('display', 'block');
   };
 
   Datamap.prototype.addPlugin = function( name, pluginFn ) {
